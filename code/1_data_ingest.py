@@ -117,14 +117,42 @@
 
 
 import os
+import cmlapi
 import sys
+import json
 from pyspark.sql import SparkSession
 from pyspark.sql.types import *
 from pyspark.sql.functions import *
 
+def set_environ(Cml,Item,Value):
+  Project=Cml.get_project(os.getenv("CDSW_PROJECT_ID"))
+  if Project.environment=='':
+    Project_Environment={}
+  else:
+    Project_Environment=json.loads(Project.environment)
+  Project_Environment[Item]=Value
+  Project.environment=json.dumps(Project_Environment)
+  Cml.update_project(Project,project_id=os.getenv("CDSW_PROJECT_ID"))
+
+def get_environ(Cml,Item):
+  Project=Cml.get_project(os.getenv("CDSW_PROJECT_ID"))
+  Project_Environment=json.loads(Project.environment)
+  return Project_Environment[Item]
+
 
 def main():
+    # Set the setup variables needed by CML APIv2
+    HOST = os.getenv("CDSW_API_URL").split(":")[0] + "://" + os.getenv("CDSW_DOMAIN")
+    API_KEY = os.getenv("CDSW_APIV2_KEY")
+    PROJECT_ID=os.getenv("CDSW_PROJECT_ID")
 
+    # Instantiate API Wrapper
+    cml = cmlapi.default_client(url=HOST,cml_api_key=API_KEY)
+
+    #get Storage Path from this projects environment variables 
+
+    storage_path=get_environ(cml,"STORAGE_PATH")  
+    
     spark = (
         SparkSession.builder.appName("PythonSQL")
         .config("spark.executor.memory", "8g")
@@ -132,8 +160,10 @@ def main():
         .config("spark.driver.memory", "6g")
         .config("spark.executor.instances", "4")
         .config("spark.yarn.access.hadoopFileSystems", os.environ["STORAGE"])
+        .config("spark.sql.catalog.spark_catalog.type","hive")
         .getOrCreate()
     )
+
 
     # First, lets load in the first dataset
     # Since we know the data already, we can add schema upfront. This is good practice as Spark will
@@ -174,7 +204,7 @@ def main():
     )
 
     path_1 = (
-        f"{os.environ['STORAGE']}/{os.environ['DATA_LOCATION']}/set_1/flight_data_1.csv"
+        f"{storage_path}/set_1/flight_data_1.csv"
     )
     flights_data_1 = spark.read.csv(path_1, header=True, schema=set_1_schema, sep=",")
 
@@ -215,7 +245,7 @@ def main():
         ]
     )
 
-    path_2 = f"{os.environ['STORAGE']}/{os.environ['DATA_LOCATION']}/set_2/"
+    path_2 = f"{storage_path}/set_2/"
     flights_data_2 = spark.read.csv(
         path_2, schema=set_2_schema, header=True, sep=",", nullValue="NA"
     )
@@ -337,17 +367,14 @@ def main():
     # This is here to create the table in Hive used be the other parts of the project, if it
     # does not already exist.
 
-    hive_database = os.environ["HIVE_DATABASE"]
-    hive_table = os.environ["HIVE_TABLE"]
+    hive_database = get_environ(cml,"HIVE_DATABASE")
+    hive_table = get_environ(cml,"HIVE_TABLE")
     hive_table_fq = hive_database + "." + hive_table
 
-    if hive_table not in list(
-        spark.sql("show tables in default").toPandas()["tableName"]
-    ):
-        print(f"Creating the {hive_table} table in {hive_database}")
-        flights_data_all.write.format("parquet").mode("overwrite").saveAsTable(
-            f"{hive_table_fq}"
-        )
+    print(f"Creating the {hive_table} table in {hive_database}")
+    spark.sql(f'create database if not exists {hive_database}')
+    spark.sql(f'drop table if exists {hive_table_fq}')
+    flights_data_all.write.format("parquet").mode("overwrite").saveAsTable(f"{hive_table_fq}")
 
     # Show the data in the hive table
     spark.sql(f"select * from {hive_table_fq}").show()
@@ -380,10 +407,8 @@ def main():
 
 if __name__ == "__main__":
 
-    if os.environ["STORAGE_MODE"] == "external":
+    if os.environ["STORAGE"] != "local":
         main()
     else:
-        print(
-            "Skipping 1_data_ingest.py because excution is limited to local storage only."
-        )
+        print("Skipping 1_data_ingest.py because excution is limited to local storage only.")
         pass

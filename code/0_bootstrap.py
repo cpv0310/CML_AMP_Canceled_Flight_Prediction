@@ -38,6 +38,7 @@
 #
 # ###########################################################################
 
+
 ## Part 0: Bootstrap File
 # You need to at the start of the project. It will install the requirements, creates the
 # STORAGE environment variable and copy the data to the STORAGE location.
@@ -46,23 +47,44 @@
 # to store hive data. On AWS it will s3a://[something], on Azure it will be
 # abfs://[something] and on CDSW cluster, it will be hdfs://[something]
 
-# Install the requirements
-!pip3 install --progress-bar off -r requirements.txt
+
 
 # Create the directories and upload data
-from cmlbootstrap import CMLBootstrap
+import cmlapi
 import os
 import xml.etree.ElementTree as ET
 import subprocess
+import json
 
-# Set the setup variables needed by CMLBootstrap
+def set_environ(Cml,Item,Value):
+  Project=Cml.get_project(os.getenv("CDSW_PROJECT_ID"))
+  if Project.environment=='':
+    Project_Environment={}
+  else:
+    Project_Environment=json.loads(Project.environment)
+  Project_Environment[Item]=Value
+  Project.environment=json.dumps(Project_Environment)
+  Cml.update_project(Project,project_id=os.getenv("CDSW_PROJECT_ID"))
+
+def get_environ(Cml,Item):
+  Project=Cml.get_project(os.getenv("CDSW_PROJECT_ID"))
+  Project_Environment=json.loads(Project.environment)
+  return Project_Environment[Item]
+
+# Set the setup variables needed by CML APIv2
 HOST = os.getenv("CDSW_API_URL").split(":")[0] + "://" + os.getenv("CDSW_DOMAIN")
 USERNAME = os.getenv("CDSW_PROJECT_URL").split("/")[6]  # args.username  # "vdibia"
-API_KEY = os.getenv("CDSW_API_KEY")
+API_KEY = os.getenv("CDSW_APIV2_KEY")
 PROJECT_NAME = os.getenv("CDSW_PROJECT")
+PROJECT_ID=os.getenv("CDSW_PROJECT_ID")
 
 # Instantiate API Wrapper
-cml = CMLBootstrap(HOST, USERNAME, API_KEY, PROJECT_NAME)
+cml = cmlapi.default_client(url=HOST,cml_api_key=API_KEY)
+
+#get Project info
+project=cml.get_project(PROJECT_ID)
+
+
 
 # Set the STORAGE environment variable
 try:
@@ -80,8 +102,7 @@ except:
                 )
     else:
         storage = "/user/" + os.getenv("HADOOP_USER_NAME")
-    storage_environment_params = {"STORAGE": storage}
-    storage_environment = cml.create_environment_variable(storage_environment_params)
+    set_environ(cml,"STORAGE",storage)
     os.environ["STORAGE"] = storage
 
 # define a function to run commands on HDFS
@@ -111,42 +132,42 @@ def run_cmd(cmd, raise_err=True):
     return proc
 
 
-if os.environ["STORAGE_MODE"] == "local":
+if os.environ["STORAGE"] == "local":
     !cd data && tar xzvf preprocessed_flight_data.tgz
 else:
     # Check if data already exists in external storage, if not, attempt to download the full
     # datasets to cloud storage, if error, set environment variable indicating the use of local
     # storage for project build
     try:
+        storage_path=get_environ(cml,"STORAGE_PATH")
         dataset_1_check = run_cmd(
-            f'hdfs dfs -test -f {os.environ["STORAGE"]}/{os.environ["DATA_LOCATION"]}/set_1/flight_data_1.csv',
+            f'hdfs dfs -test -f {storage_path}/set_1/flight_data_1.csv',
             raise_err=False,
         )
         dataset_2_check = run_cmd(
-            f'hdfs dfs -test -f {os.environ["STORAGE"]}/{os.environ["DATA_LOCATION"]}/set_2/2018.csv',
+            f'hdfs dfs -test -f {storage_path}/set_2/2018.csv',
             raise_err=False,
         )
 
         if dataset_1_check.returncode != 0:
             run_cmd(
-                f'hdfs dfs -mkdir -p {os.environ["STORAGE"]}/{os.environ["DATA_LOCATION"]}/set_1'
+                f'hdfs dfs -mkdir -p {storage_path}/set_1'
             )
             run_cmd(
-                f'curl https://cdp-demo-data.s3-us-west-2.amazonaws.com/all_flight_data.zip | zcat | hadoop fs -put - {os.environ["STORAGE"]}/{os.environ["DATA_LOCATION"]}/set_1/flight_data_1.csv'
+                f'curl https://cdp-demo-data.s3-us-west-2.amazonaws.com/all_flight_data.zip | zcat | hadoop fs -put - {storage_path}/set_1/flight_data_1.csv'
             )
 
         if dataset_2_check.returncode != 0:
             run_cmd(
-                f'hdfs dfs -mkdir -p {os.environ["STORAGE"]}/{os.environ["DATA_LOCATION"]}/set_2'
+                f'hdfs dfs -mkdir -p {storage_path}/set_2'
             )
             run_cmd(
-                f'for i in $(seq 2009 2018); do curl https://cdp-demo-data.s3-us-west-2.amazonaws.com/$i.csv | hadoop fs -put - {os.environ["STORAGE"]}/{os.environ["DATA_LOCATION"]}/set_2/$i.csv; done'
+                f'for i in $(seq 2009 2018); do curl https://cdp-demo-data.s3-us-west-2.amazonaws.com/$i.csv | hadoop fs -put - {storage_path}/set_2/$i.csv; done'
             )
-
     except RuntimeError as error:
-        cml.create_environment_variable({"STORAGE_MODE": "local"})
-        !cd data && tar xzvf preprocessed_flight_data.tgz
-        print(
-            "Could not interact with external data store so local project storage will be used. HDFS DFS command failed with the following error:"
-        )
-        print(error)
+          set_environ(cml,"STORAGE","local")
+          !cd data && tar xzvf preprocessed_flight_data.tgz
+          print(
+                "Could not interact with external data store so local project storage will be used. HDFS DFS command failed with the following error:"
+              )
+          print(error)
