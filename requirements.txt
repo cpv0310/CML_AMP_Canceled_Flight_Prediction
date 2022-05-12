@@ -1,6 +1,7 @@
 pandas
+numpy
 joblib==0.17.0 
 scikit-learn==0.23.2 
 xgboost==1.2.1 
-numpy
 flask==1.1.2
+
